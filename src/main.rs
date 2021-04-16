@@ -49,6 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         kernel_size: 1 << 22,
         kernel_name: "poclbm120327".to_string(),
         sleep: 0,
+        gpu_indices: vec![0],
     };
     let miner = Miner::setup(mining_settings.clone()).unwrap();
     let server = Arc::new(Server {

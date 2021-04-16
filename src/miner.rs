@@ -1,7 +1,7 @@
 use std::{convert::TryInto, u32};
 
 use hex_literal::hex;
-use ocl::{builders::ProgramBuilder, Buffer, Kernel, ProQue};
+use ocl::{builders::{ProgramBuilder, DeviceSpecifier}, Buffer, Kernel, ProQue};
 
 use crate::{
     precalc::{precalc_hash, Precalc},
@@ -16,6 +16,7 @@ pub struct MiningSettings {
     pub kernel_size: u32,
     pub kernel_name: String,
     pub sleep: u32,
+    pub gpu_indices: Vec<usize>,
 }
 
 pub struct Miner {
@@ -85,6 +86,9 @@ impl Miner {
             .src_file(format!("kernels/{}.cl", settings.kernel_name))
             .cmplr_def("WORKSIZE", settings.local_work_size);
         let pro_que = ProQue::builder()
+            .device(DeviceSpecifier::WrappingIndices(
+                settings.gpu_indices.clone()
+            ))
             .prog_bldr(builder)
             .dims(settings.kernel_size)
             .build()?;
