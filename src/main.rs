@@ -9,14 +9,12 @@ use std::{
 use bitcoincash_addr::Address;
 use block::{create_block, encode_compact_size, Block, GetBlockTemplateResponse};
 use miner::{Miner, MiningSettings, Work};
-use precalc::Precalc;
 use reqwest::RequestBuilder;
 use serde::Deserialize;
 use tokio::sync::Mutex;
 
 mod block;
 mod miner;
-mod precalc;
 mod sha256;
 
 struct Server {
@@ -35,7 +33,6 @@ struct Server {
 struct BlockState {
     current_work: Work,
     current_block: Option<Block>,
-    current_precalc: Precalc,
     next_block: Option<Block>,
     extra_nonce: u64,
 }
@@ -46,8 +43,9 @@ type ServerRef = Arc<Server>;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mining_settings = MiningSettings {
         local_work_size: 256,
-        kernel_size: 1 << 22,
-        kernel_name: "poclbm120327".to_string(),
+        inner_iter_size: 16,
+        kernel_size: 1 << 18,
+        kernel_name: "lotus_og".to_string(),
         sleep: 0,
         gpu_indices: vec![0],
     };
@@ -56,14 +54,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         metrics_nonces_per_call: miner.num_nonces_per_search(),
         miner: std::sync::Mutex::new(miner),
         client: reqwest::Client::new(),
-        bitcoind_url: "http://127.0.0.1:7632".to_string(),
+        bitcoind_url: "http://127.0.0.1:7732".to_string(),
         bitcoind_user: "lotus".to_string(),
         bitcoind_password: "lotus".to_string(),
         miner_addr: Address::decode("bchtest:qrrmys82ksusqtyswkvz7fdwv2uvjccdty69ean7vs").unwrap(),
         block_state: Mutex::new(BlockState {
             current_work: Work::default(),
             current_block: None,
-            current_precalc: Precalc::default(),
             next_block: None,
             extra_nonce: 0,
         }),
@@ -110,7 +107,8 @@ async fn update_next_block(server: &Server) -> Result<(), Box<dyn std::error::Er
         .body(r#"{"method":"getblocktemplate","params":[]}"#)
         .send()
         .await?;
-    let response: GetBlockTemplateResponse = serde_json::from_str(&response.text().await?)?;
+    let response = response.text().await?;
+    let response: GetBlockTemplateResponse = serde_json::from_str(&response)?;
     let mut block_state = server.block_state.lock().await;
     let block = create_block(
         &server.miner_addr,
@@ -139,14 +137,12 @@ async fn mine_some_nonces(server: ServerRef) -> ocl::Result<()> {
     let mut block_state = server.block_state.lock().await;
     if let Some(next_block) = block_state.next_block.take() {
         block_state.current_work = Work::from_header(next_block.header, next_block.target);
-        block_state.current_precalc = block_state.current_work.precalc();
         block_state.current_block = Some(next_block);
     }
     if block_state.current_block.is_none() {
         return Ok(());
     }
     let mut work = block_state.current_work;
-    let precalc = block_state.current_precalc;
     drop(block_state); // release lock
     let nonce = tokio::task::spawn_blocking({
         let server = Arc::clone(&server);
@@ -156,7 +152,7 @@ async fn mine_some_nonces(server: ServerRef) -> ocl::Result<()> {
                 eprintln!("Exhaustively searched nonces, getblocktemplate too slow!");
                 return Ok(None);
             }
-            miner.find_nonce(&work, &precalc)
+            miner.find_nonce(&work)
         }
     })
     .await
@@ -202,6 +198,7 @@ async fn submit_block(server: &Server, block: &Block) -> Result<(), Box<dyn std:
         result: Option<String>,
     }
     let mut serialized_block = block.header.to_vec();
+    encode_compact_size(&mut serialized_block, 0)?;
     encode_compact_size(&mut serialized_block, block.txs.len())?;
     for tx in &block.txs {
         serialized_block.extend_from_slice(&tx);
