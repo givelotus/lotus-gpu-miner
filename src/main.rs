@@ -14,9 +14,12 @@ use reqwest::RequestBuilder;
 use serde::Deserialize;
 use tokio::sync::Mutex;
 
+use settings::Settings;
+
 mod block;
 mod miner;
 mod precalc;
+mod settings;
 mod sha256;
 
 struct Server {
@@ -44,22 +47,23 @@ type ServerRef = Arc<Server>;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let configuration: Settings = Settings::new().expect("couldn't load config");
     let mining_settings = MiningSettings {
         local_work_size: 256,
-        kernel_size: 1 << 22,
+        kernel_size: 1 << configuration.kernel_size,
         kernel_name: "poclbm120327".to_string(),
         sleep: 0,
-        gpu_indices: vec![0],
+        gpu_indices: vec![configuration.gpu_index as usize],
     };
     let miner = Miner::setup(mining_settings.clone()).unwrap();
     let server = Arc::new(Server {
         metrics_nonces_per_call: miner.num_nonces_per_search(),
         miner: std::sync::Mutex::new(miner),
         client: reqwest::Client::new(),
-        bitcoind_url: "http://127.0.0.1:7632".to_string(),
-        bitcoind_user: "lotus".to_string(),
-        bitcoind_password: "lotus".to_string(),
-        miner_addr: Address::decode("bchtest:qrrmys82ksusqtyswkvz7fdwv2uvjccdty69ean7vs").unwrap(),
+        bitcoind_url: configuration.rpc_url.clone(),
+        bitcoind_user: configuration.rpc_user.clone(),
+        bitcoind_password: configuration.rpc_password.clone(),
+        miner_addr: Address::decode(&configuration.mine_to_address[..]).unwrap(),
         block_state: Mutex::new(BlockState {
             current_work: Work::default(),
             current_block: None,
@@ -77,7 +81,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Err(err) = update_next_block(&server).await {
                     eprintln!("update_next_block error: {:?}", err);
                 }
-                tokio::time::sleep(Duration::from_secs(3)).await;
+                tokio::time::sleep(Duration::from_secs(configuration.rpc_poll_interval as u64))
+                    .await;
             }
         }
     });
