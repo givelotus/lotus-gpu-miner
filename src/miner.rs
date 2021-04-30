@@ -44,6 +44,10 @@ impl Work {
         self.header[44..48].copy_from_slice(&nonce.to_le_bytes());
     }
 
+    pub fn set_big_nonce(&mut self, big_nonce: u32) {
+        self.header[48..52].copy_from_slice(&big_nonce.to_le_bytes());
+    }
+
     pub fn header(&self) -> &[u8; 160] {
         &self.header
     }
@@ -104,7 +108,7 @@ impl Miner {
 
     pub fn has_nonces_left(&self, work: &Work) -> bool {
         work.nonce_idx
-            .checked_mul(self.settings.kernel_size)
+            .checked_mul(self.num_nonces_per_search().try_into().unwrap())
             .is_some()
     }
 

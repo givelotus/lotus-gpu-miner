@@ -1,10 +1,8 @@
-use std::{
-    sync::{
+use std::{io::BufRead, sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
-    },
-    time::{Duration, SystemTime},
-};
+    }, time::{Duration, SystemTime}};
+use std::convert::TryInto;
 
 use bitcoincash_addr::Address;
 use block::{create_block, encode_compact_size, Block, GetBlockTemplateResponse};
@@ -12,6 +10,8 @@ use miner::{Miner, MiningSettings, Work};
 use reqwest::RequestBuilder;
 use serde::Deserialize;
 use tokio::sync::Mutex;
+
+use crate::sha256::lotus_hash;
 
 mod block;
 mod miner;
@@ -39,59 +39,67 @@ struct BlockState {
 
 type ServerRef = Arc<Server>;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn n_bits_to_target(n_bits: u32) -> [u8; 32] {
+    println!("n_bits: {:08x}, {}", n_bits, n_bits >> 24);
+    let shift = (n_bits >> 24) - 3 - 16;
+    let upper = ((n_bits & 0x7f_ffff) as u128) << (shift * 8);
+    let mut target = [0u8; 32];
+    target[16..].copy_from_slice(&upper.to_le_bytes());
+    target
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mining_settings = MiningSettings {
         local_work_size: 256,
         inner_iter_size: 16,
-        kernel_size: 1 << 18,
+        kernel_size: 1 << 22,
         kernel_name: "lotus_og".to_string(),
         sleep: 0,
         gpu_indices: vec![0],
     };
-    let miner = Miner::setup(mining_settings.clone()).unwrap();
-    let server = Arc::new(Server {
-        metrics_nonces_per_call: miner.num_nonces_per_search(),
-        miner: std::sync::Mutex::new(miner),
-        client: reqwest::Client::new(),
-        bitcoind_url: "http://127.0.0.1:7732".to_string(),
-        bitcoind_user: "lotus".to_string(),
-        bitcoind_password: "lotus".to_string(),
-        miner_addr: Address::decode("bchtest:qrrmys82ksusqtyswkvz7fdwv2uvjccdty69ean7vs").unwrap(),
-        block_state: Mutex::new(BlockState {
-            current_work: Work::default(),
-            current_block: None,
-            next_block: None,
-            extra_nonce: 0,
-        }),
-        metrics_timestamp: Mutex::new(SystemTime::now()),
-        metrics_nonces: AtomicU64::new(0),
-    });
-    let t1 = tokio::spawn({
-        let server = Arc::clone(&server);
-        async move {
-            loop {
-                if let Err(err) = update_next_block(&server).await {
-                    eprintln!("update_next_block error: {:?}", err);
-                }
-                tokio::time::sleep(Duration::from_secs(3)).await;
-            }
-        }
-    });
-    let t2 = tokio::spawn({
-        let server = Arc::clone(&server);
-        async move {
-            loop {
-                if let Err(err) = mine_some_nonces(Arc::clone(&server)).await {
-                    eprintln!("mine_some_nonces error: {:?}", err);
-                }
-                tokio::time::sleep(Duration::from_micros(3)).await;
-            }
-        }
-    });
-    t1.await?;
-    t2.await?;
+    let mut miner = Miner::setup(mining_settings.clone()).unwrap();
+    let mut last_hash: Option<[u8; 32]> = None;
+    let mut found_nonces = Vec::new();
 
+    let file = std::fs::File::open("headers.txt")?;
+    let mut headers = std::io::BufReader::new(file).lines();
+    while let Some(header) = headers.next() {
+        let mut header: [u8; 160] = hex::decode(&header?)?.try_into().unwrap();
+        if let Some(last_hash) = last_hash {
+            header[..32].copy_from_slice(&last_hash);
+        }
+        let n_bits = u32::from_le_bytes(header[32..36].try_into().unwrap());
+        let target = n_bits_to_target(n_bits);
+        println!("target: {}", hex::encode(&target));
+        let mut work = Work::from_header(header, target);
+        let mut big_nonce = 0u32;
+        'solve_header: loop {
+            work.set_big_nonce(big_nonce);
+            println!("big nonce: {}", big_nonce);
+            while miner.has_nonces_left(&work) {
+                if let Some(nonce) = miner.find_nonce(&work).unwrap() {
+                    let mut result_nonce = big_nonce as u64;
+                    result_nonce <<= 32;
+                    result_nonce |= nonce as u64;
+                    work.set_nonce(nonce);
+                    let mut solved_hash = lotus_hash(work.header());
+                    println!("solved header: {}", hex::encode(work.header()));
+                    found_nonces.push(result_nonce);
+                    last_hash = Some(solved_hash);
+                    solved_hash.reverse();
+                    println!("{} has nonce: {}", hex::encode(&solved_hash), result_nonce);
+                    break 'solve_header;
+                }
+                work.nonce_idx += 1;
+            }
+            big_nonce += 1;
+            work.nonce_idx = 0;
+        }
+    }
+    println!("Nonces:");
+    for nonce in found_nonces {
+        println!("    {}", nonce);
+    }
     Ok(())
 }
 
