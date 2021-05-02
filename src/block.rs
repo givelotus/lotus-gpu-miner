@@ -232,7 +232,7 @@ pub fn create_block(
     // hashMerkleRoot
     header.extend(&merkle_root);
     // hashExtendedMetadata
-    header.extend(&sha2::Sha256::digest(&[0]));
+    header.extend(sha2::Sha256::digest(&sha2::Sha256::digest(&[0])));
     let mut target: [u8; 32] = hex::decode(&block_template.target)
         .unwrap()
         .try_into()
