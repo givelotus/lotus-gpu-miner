@@ -1,19 +1,17 @@
-use std::{convert::TryInto, u32};
-
-use hex_literal::hex;
-use ocl::{builders::{ProgramBuilder, DeviceSpecifier}, Buffer, Kernel, ProQue};
-
-use crate::{
-    precalc::{precalc_hash, Precalc},
-    sha256::{sha256d, Sha256},
+use ocl::{
+    builders::{DeviceSpecifier, ProgramBuilder},
+    Buffer, Device, Kernel, Platform, ProQue,
 };
+use sha2::Digest;
+use std::convert::TryInto;
 
-const SHA256_PADDING: [u8; 48] = hex!("800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000280");
+use crate::sha256::lotus_hash;
 
 #[derive(Debug, Clone)]
 pub struct MiningSettings {
     pub local_work_size: i32,
     pub kernel_size: u32,
+    pub inner_iter_size: i32,
     pub kernel_name: String,
     pub sleep: u32,
     pub gpu_indices: Vec<usize>,
@@ -21,48 +19,32 @@ pub struct MiningSettings {
 
 pub struct Miner {
     search_kernel: Kernel,
+    header_buffer: Buffer<u32>,
     buffer: Buffer<u32>,
     settings: MiningSettings,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct Work {
-    header: [u8; 80],
-    data: [u8; 128],
-    midstate: [u32; 8],
+    header: [u8; 160],
     target: [u8; 32],
     pub nonce_idx: u32,
 }
 
 impl Work {
-    pub fn from_header(header: [u8; 80], target: [u8; 32]) -> Work {
-        let mut data = [0; 128];
-        data[..80].copy_from_slice(&header);
-        data[80..].copy_from_slice(&SHA256_PADDING);
-        let mut hash = Sha256::new();
-        hash.update_prepad(&data[..64].try_into().unwrap());
+    pub fn from_header(header: [u8; 160], target: [u8; 32]) -> Work {
         Work {
             header,
-            data,
-            midstate: hash.state(),
             target,
             nonce_idx: 0,
         }
     }
 
-    pub fn precalc(&self) -> Precalc {
-        let mut data_be = [0u32; 32];
-        for (chunk, data) in self.data.chunks(4).zip(data_be.iter_mut()) {
-            *data = u32::from_be_bytes(chunk.try_into().unwrap());
-        }
-        precalc_hash(&self.midstate, &data_be[16..])
-    }
-
     pub fn set_nonce(&mut self, nonce: u32) {
-        self.header[76..].copy_from_slice(&nonce.to_le_bytes());
+        self.header[44..48].copy_from_slice(&nonce.to_le_bytes());
     }
 
-    pub fn header(&self) -> &[u8; 80] {
+    pub fn header(&self) -> &[u8; 160] {
         &self.header
     }
 }
@@ -70,9 +52,7 @@ impl Work {
 impl Default for Work {
     fn default() -> Self {
         Work {
-            header: [0; 80],
-            data: [0; 128],
-            midstate: [0; 8],
+            header: [0; 160],
             target: [0; 32],
             nonce_idx: 0,
         }
@@ -84,49 +64,40 @@ impl Miner {
         let mut builder = ProgramBuilder::new();
         builder
             .src_file(format!("kernels/{}.cl", settings.kernel_name))
-            .cmplr_def("WORKSIZE", settings.local_work_size);
+            .cmplr_def("WORKSIZE", settings.local_work_size)
+            .cmplr_def("ITERATIONS", settings.inner_iter_size);
+        let platforms = Platform::list();
+        println!("Platforms:");
+        for (platform_idx, platform) in platforms.iter().enumerate() {
+            println!(
+                "{}: {}",
+                platform_idx,
+                platform.name().unwrap_or("<invalid platform>".to_string())
+            );
+            let devices = Device::list_all(platform)?;
+            for (device_idx, device) in devices.iter().enumerate() {
+                println!("- device {}: {}", device_idx, device.name()?);
+            }
+        }
         let pro_que = ProQue::builder()
             .device(DeviceSpecifier::WrappingIndices(
-                settings.gpu_indices.clone()
+                settings.gpu_indices.clone(),
             ))
             .prog_bldr(builder)
             .dims(settings.kernel_size)
             .build()?;
         let search_kernel = pro_que
             .kernel_builder("search")
-            .arg_named("state0", 0u32)
-            .arg_named("state1", 0u32)
-            .arg_named("state2", 0u32)
-            .arg_named("state3", 0u32)
-            .arg_named("state4", 0u32)
-            .arg_named("state5", 0u32)
-            .arg_named("state6", 0u32)
-            .arg_named("state7", 0u32)
-            .arg_named("b1", 0u32)
-            .arg_named("c1", 0u32)
-            .arg_named("f1", 0u32)
-            .arg_named("g1", 0u32)
-            .arg_named("h1", 0u32)
-            .arg_named("base", 0u32)
-            .arg_named("fw0", 0u32)
-            .arg_named("fw1", 0u32)
-            .arg_named("fw2", 0u32)
-            .arg_named("fw3", 0u32)
-            .arg_named("fw15", 0u32)
-            .arg_named("fw01r", 0u32)
-            .arg_named("D1A", 0u32)
-            .arg_named("C1addK5", 0u32)
-            .arg_named("B1addK6", 0u32)
-            .arg_named("W16addK16", 0u32)
-            .arg_named("W17addK17", 0u32)
-            .arg_named("PreVal4addT1", 0u32)
-            .arg_named("Preval0", 0u32)
+            .arg_named("offset", 0u32)
+            .arg_named("partial_header", None::<&Buffer<u32>>)
             .arg_named("output", None::<&Buffer<u32>>)
             .build()?;
         let buffer = pro_que.buffer_builder::<u32>().len(0xff).build()?;
+        let header_buffer = pro_que.buffer_builder::<u32>().len(0xff).build()?;
         Ok(Miner {
             search_kernel,
             buffer,
+            header_buffer,
             settings,
         })
     }
@@ -138,20 +109,32 @@ impl Miner {
     }
 
     pub fn num_nonces_per_search(&self) -> u64 {
-        self.settings.kernel_size as u64
+        self.settings.kernel_size as u64 * self.settings.inner_iter_size as u64
     }
 
-    pub fn find_nonce(&mut self, work: &Work, precalc: &Precalc) -> ocl::Result<Option<u32>> {
-        let base = match work.nonce_idx.checked_mul(self.settings.kernel_size) {
+    pub fn find_nonce(&mut self, work: &Work) -> ocl::Result<Option<u32>> {
+        let base = match work
+            .nonce_idx
+            .checked_mul(self.num_nonces_per_search().try_into().unwrap())
+        {
             Some(base) => base,
             None => {
                 eprintln!("BUG: Nonce base overflow, skipping");
                 return Ok(None);
             }
         };
-        precalc.set_kernel_args(&mut self.search_kernel)?;
+        let mut partial_header = [0u8; 84];
+        partial_header[..52].copy_from_slice(&work.header[..52]);
+        partial_header[52..].copy_from_slice(&sha2::Sha256::digest(&work.header[52..]));
+        let mut partial_header_ints = [0u32; 21];
+        for (chunk, int) in partial_header.chunks(4).zip(partial_header_ints.iter_mut()) {
+            *int = u32::from_be_bytes(chunk.try_into().unwrap());
+        }
+        self.header_buffer.write(&partial_header_ints[..]).enq()?;
+        self.search_kernel
+            .set_arg("partial_header", &self.header_buffer)?;
         self.search_kernel.set_arg("output", &self.buffer)?;
-        self.search_kernel.set_arg("base", base)?;
+        self.search_kernel.set_arg("offset", base)?;
         let mut vec = vec![0; self.buffer.len()];
         self.buffer.write(&vec).enq()?;
         let cmd = self
@@ -167,8 +150,8 @@ impl Miner {
             'nonce: for &nonce in &vec[..0x7f] {
                 let nonce = nonce.swap_bytes();
                 if nonce != 0 {
-                    header[76..].copy_from_slice(&nonce.to_le_bytes());
-                    let hash = sha256d(&header);
+                    header[44..48].copy_from_slice(&nonce.to_le_bytes());
+                    let hash = lotus_hash(&header);
                     let mut candidate_hash = hash;
                     candidate_hash.reverse();
                     println!(

@@ -3,11 +3,12 @@ use std::{convert::TryInto, io::Write};
 use bitcoincash_addr::{Address, HashType};
 use hex_literal::hex;
 use serde::Deserialize;
+use sha2::Digest;
 
 use crate::sha256::sha256d;
 
 pub struct Block {
-    pub header: [u8; 80],
+    pub header: [u8; 160],
     pub tx_hashes: Vec<[u8; 32]>,
     pub txs: Vec<Vec<u8>>,
     pub target: [u8; 32],
@@ -23,12 +24,13 @@ pub struct GetBlockTemplateResponse {
 pub struct BlockTemplate {
     pub version: u32,
     pub previousblockhash: String,
+    pub epochblockhash: String,
     pub transactions: Vec<BlockTemplateTx>,
     pub coinbasetxn: BlockTemplateCoinbaseTxn,
     pub coinbasevalue: u64,
     pub target: String,
-    pub mintime: u32,
-    pub curtime: u32,
+    pub mintime: u64,
+    pub curtime: u64,
     pub bits: String,
     pub height: i64,
 }
@@ -185,9 +187,13 @@ pub fn create_block(
         .collect::<Vec<_>>();
     tx_hashes.insert(0, sha256d(&coinbase));
     txs.insert(0, coinbase);
+    let txs_size = txs.iter().map(|tx| tx.len() as u64).sum::<u64>();
+    let mut num_tx_ser = Vec::with_capacity(5);
+    encode_compact_size(&mut num_tx_ser, txs.len()).unwrap();
+    let block_size = 161 + num_tx_ser.len() as u64 + txs_size;
     let merkle_root = get_merkle_root(tx_hashes.clone());
-    let mut header = Vec::with_capacity(80);
-    header.extend(&block_template.version.to_le_bytes());
+    let mut header = Vec::with_capacity(160);
+    // hashPrevBlock (32 bytes)
     header.extend(
         hex::decode(&block_template.previousblockhash)
             .unwrap()
@@ -195,8 +201,7 @@ pub fn create_block(
             .rev()
             .cloned(),
     );
-    header.extend(&merkle_root);
-    header.extend(&block_template.curtime.to_le_bytes());
+    // nBits (4 bytes)
     header.extend(
         hex::decode(&block_template.bits)
             .unwrap()
@@ -204,7 +209,30 @@ pub fn create_block(
             .rev()
             .cloned(),
     );
-    header.extend(&[0; 4]);
+    // nTime (6 bytes)
+    header.extend(&block_template.curtime.to_le_bytes()[..6]);
+    // nReserved (2 bytes)
+    header.extend(&[0, 0]);
+    // nNonce (8 bytes)
+    header.extend(&[0; 8]);
+    // nMetaVersion (1 byte)
+    header.extend(&[1]);
+    // nSize (7 bytes)
+    header.extend(&block_size.to_le_bytes()[..7]);
+    // nHeight (4 bytes)
+    header.extend(&(block_template.height as u32).to_le_bytes());
+    // hashEpochBlock (32 bytes)
+    header.extend(
+        hex::decode(&block_template.epochblockhash)
+            .unwrap()
+            .iter()
+            .rev()
+            .cloned(),
+    );
+    // hashMerkleRoot
+    header.extend(&merkle_root);
+    // hashExtendedMetadata
+    header.extend(sha2::Sha256::digest(&sha2::Sha256::digest(&[0])));
     let mut target: [u8; 32] = hex::decode(&block_template.target)
         .unwrap()
         .try_into()
