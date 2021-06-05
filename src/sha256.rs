@@ -1,11 +1,5 @@
 use sha2::Digest;
 
-pub fn sha256d(data: &[u8]) -> [u8; 32] {
-    let hash = sha2::Sha256::digest(&data);
-    let hash = sha2::Sha256::digest(&hash);
-    hash.into()
-}
-
 pub fn lotus_hash(header: &[u8; 160]) -> [u8; 32] {
     let tx_layer_hash = sha2::Sha256::digest(&header[52..]);
     let mut pow_layer = [0u8; 52];

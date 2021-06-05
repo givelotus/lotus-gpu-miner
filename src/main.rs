@@ -6,8 +6,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use bitcoincash_addr::Address;
-use block::{create_block, encode_compact_size, Block, GetBlockTemplateResponse};
+use block::{create_block, Block, GetRawUnsolvedBlockResponse};
 use miner::{Miner, MiningSettings, Work};
 use reqwest::RequestBuilder;
 use serde::Deserialize;
@@ -25,7 +24,7 @@ struct Server {
     bitcoind_url: String,
     bitcoind_user: String,
     bitcoind_password: String,
-    miner_addr: Address,
+    miner_addr: String,
     miner: std::sync::Mutex<Miner>,
     block_state: Mutex<BlockState>,
     metrics_timestamp: Mutex<SystemTime>,
@@ -61,7 +60,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         bitcoind_url: configuration.rpc_url.clone(),
         bitcoind_user: configuration.rpc_user.clone(),
         bitcoind_password: configuration.rpc_password.clone(),
-        miner_addr: Address::decode(&configuration.mine_to_address[..]).unwrap(),
+        miner_addr: configuration.mine_to_address.clone(),
         block_state: Mutex::new(BlockState {
             current_work: Work::default(),
             current_block: None,
@@ -109,28 +108,27 @@ fn init_request(server: &Server) -> RequestBuilder {
 
 async fn update_next_block(server: &Server) -> Result<(), Box<dyn std::error::Error>> {
     let response = init_request(&server)
-        .body(r#"{"method":"getblocktemplate","params":[]}"#)
+        .body(format!(
+            r#"{{"method":"getrawunsolvedblock","params":["{}"]}}"#,
+            server.miner_addr
+        ))
         .send()
         .await?;
     let response = response.text().await?;
-    let response: GetBlockTemplateResponse = serde_json::from_str(&response)?;
+    let response: GetRawUnsolvedBlockResponse = serde_json::from_str(&response)?;
     let mut block_state = server.block_state.lock().await;
-    let block = create_block(
-        &server.miner_addr,
-        &response.result,
-        block_state.extra_nonce,
-    );
+    let block = create_block(&response.result);
     if let Some(current_block) = &block_state.current_block {
         if current_block.header[4..36] != block.header[4..36] {
             println!(
                 "Switched to new chain tip: {}",
-                response.result.previousblockhash
+                hex::encode(&block.header[4..36])
             );
         }
     } else {
         println!(
             "Started mining on chain tip: {}",
-            response.result.previousblockhash
+            &hex::encode(&block.header[4..36])
         );
     }
     block_state.extra_nonce += 1;
@@ -203,11 +201,7 @@ async fn submit_block(server: &Server, block: &Block) -> Result<(), Box<dyn std:
         result: Option<String>,
     }
     let mut serialized_block = block.header.to_vec();
-    encode_compact_size(&mut serialized_block, 0)?;
-    encode_compact_size(&mut serialized_block, block.txs.len())?;
-    for tx in &block.txs {
-        serialized_block.extend_from_slice(&tx);
-    }
+    serialized_block.extend_from_slice(&block.body);
     let response = init_request(server)
         .body(format!(
             r#"{{"method":"submitblock","params":[{:?}]}}"#,
