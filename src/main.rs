@@ -22,7 +22,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mining_settings = MiningSettings {
         local_work_size: 256,
         inner_iter_size: 16,
-        kernel_size: 1 << 22,
+        kernel_size: 1 << 18,
         kernel_name: "lotus_og".to_string(),
         sleep: 0,
         gpu_indices: vec![1],
