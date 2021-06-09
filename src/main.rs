@@ -1,3 +1,4 @@
+use rand::prelude::*;
 use std::convert::TryInto;
 use std::io::BufRead;
 
@@ -34,7 +35,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut headers = std::io::BufReader::new(file).lines();
     let header_hex: String = headers.next().unwrap().unwrap();
     let header: [u8; 160] = hex::decode(&header_hex)?.try_into().unwrap();
-    let mut big_nonce = 0u32;
+    let mut big_nonce = rand::random::<u32>();
+    println!("big_nonce seed: {}", big_nonce);
     let n_bits = u32::from_le_bytes(header[32..36].try_into().unwrap());
     let target = n_bits_to_target(n_bits);
     println!("target: {}", hex::encode(&target));
