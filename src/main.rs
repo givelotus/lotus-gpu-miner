@@ -8,6 +8,7 @@ use std::{
 
 use block::{create_block, Block, GetRawUnsolvedBlockResponse};
 use miner::{Miner, MiningSettings, Work};
+use rand::{Rng, SeedableRng};
 use reqwest::RequestBuilder;
 use serde::Deserialize;
 use tokio::sync::Mutex;
@@ -27,6 +28,7 @@ struct Server {
     miner_addr: String,
     miner: std::sync::Mutex<Miner>,
     block_state: Mutex<BlockState>,
+    rng: Mutex<rand::rngs::StdRng>,
     metrics_timestamp: Mutex<SystemTime>,
     metrics_nonces: AtomicU64,
     metrics_nonces_per_call: u64,
@@ -67,6 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             next_block: None,
             extra_nonce: 0,
         }),
+        rng: Mutex::new(rand::rngs::StdRng::from_entropy()),
         metrics_timestamp: Mutex::new(SystemTime::now()),
         metrics_nonces: AtomicU64::new(0),
     });
@@ -152,6 +155,8 @@ async fn mine_some_nonces(server: ServerRef) -> ocl::Result<()> {
         return Ok(());
     }
     let mut work = block_state.current_work;
+    let big_nonce = server.rng.lock().await.gen();
+    work.set_big_nonce(big_nonce);
     drop(block_state); // release lock
     let nonce = tokio::task::spawn_blocking({
         let server = Arc::clone(&server);
@@ -171,8 +176,8 @@ async fn mine_some_nonces(server: ServerRef) -> ocl::Result<()> {
     .unwrap()?;
     let mut block_state = server.block_state.lock().await;
     if let Some(nonce) = nonce {
-        work.set_nonce(nonce);
-        println!("Block hash below target!");
+        work.set_big_nonce(nonce);
+        println!("Block hash below target with nonce: {}", nonce);
         if let Some(mut block) = block_state.current_block.take() {
             block.header = *work.header();
             if let Err(err) = submit_block(&server, &block).await {

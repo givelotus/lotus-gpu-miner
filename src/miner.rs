@@ -40,8 +40,8 @@ impl Work {
         }
     }
 
-    pub fn set_nonce(&mut self, nonce: u32) {
-        self.header[44..48].copy_from_slice(&nonce.to_le_bytes());
+    pub fn set_big_nonce(&mut self, big_nonce: u64) {
+        self.header[44..52].copy_from_slice(&big_nonce.to_le_bytes());
     }
 
     pub fn header(&self) -> &[u8; 160] {
@@ -112,7 +112,7 @@ impl Miner {
         self.settings.kernel_size as u64 * self.settings.inner_iter_size as u64
     }
 
-    pub fn find_nonce(&mut self, work: &Work) -> ocl::Result<Option<u32>> {
+    pub fn find_nonce(&mut self, work: &Work) -> ocl::Result<Option<u64>> {
         let base = match work
             .nonce_idx
             .checked_mul(self.num_nonces_per_search().try_into().unwrap())
@@ -154,12 +154,13 @@ impl Miner {
                 let nonce = nonce.swap_bytes();
                 if nonce != 0 {
                     header[44..48].copy_from_slice(&nonce.to_le_bytes());
+                    let result_nonce = u64::from_le_bytes(header[44..52].try_into().unwrap());
                     let hash = lotus_hash(&header);
                     let mut candidate_hash = hash;
                     candidate_hash.reverse();
                     println!(
                         "Candidate: nonce={}, hash={}",
-                        nonce,
+                        result_nonce,
                         hex::encode(&candidate_hash)
                     );
                     if hash.last() != Some(&0) {
@@ -173,7 +174,7 @@ impl Miner {
                             continue 'nonce;
                         }
                         if t > h {
-                            return Ok(Some(nonce));
+                            return Ok(Some(result_nonce));
                         }
                     }
                 }
