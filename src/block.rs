@@ -34,3 +34,9 @@ pub fn create_block(unsolved_block_and_target: &RawUnsolvedBlockAndTarget) -> Bl
         target,
     }
 }
+
+impl Block {
+    pub fn prev_hash(&self) -> &[u8] {
+        &self.header[..32]
+    }
+}

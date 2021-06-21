@@ -106,6 +106,12 @@ fn init_request(server: &Server) -> RequestBuilder {
         .basic_auth(&server.bitcoind_user, Some(&server.bitcoind_password))
 }
 
+fn display_hash(hash: &[u8]) -> String {
+    let mut hash = hash.to_vec();
+    hash.reverse();
+    hex::encode(&hash)
+}
+
 async fn update_next_block(server: &Server) -> Result<(), Box<dyn std::error::Error>> {
     let response = init_request(&server)
         .body(format!(
@@ -119,16 +125,16 @@ async fn update_next_block(server: &Server) -> Result<(), Box<dyn std::error::Er
     let mut block_state = server.block_state.lock().await;
     let block = create_block(&response.result);
     if let Some(current_block) = &block_state.current_block {
-        if current_block.header[4..36] != block.header[4..36] {
+        if current_block.prev_hash() != block.prev_hash() {
             println!(
                 "Switched to new chain tip: {}",
-                hex::encode(&block.header[4..36])
+                display_hash(&block.prev_hash())
             );
         }
     } else {
         println!(
             "Started mining on chain tip: {}",
-            &hex::encode(&block.header[4..36])
+            display_hash(&block.prev_hash())
         );
     }
     block_state.extra_nonce += 1;
@@ -152,7 +158,10 @@ async fn mine_some_nonces(server: ServerRef) -> ocl::Result<()> {
         move || {
             let mut miner = server.miner.lock().unwrap();
             if !miner.has_nonces_left(&work) {
-                eprintln!("Exhaustively searched nonces, getblocktemplate too slow!");
+                eprintln!(
+                    "Error: Exhaustively searched nonces. This could be fixed by lowering \
+                           rpc_poll_interval."
+                );
                 return Ok(None);
             }
             miner.find_nonce(&work)
@@ -167,10 +176,13 @@ async fn mine_some_nonces(server: ServerRef) -> ocl::Result<()> {
         if let Some(mut block) = block_state.current_block.take() {
             block.header = *work.header();
             if let Err(err) = submit_block(&server, &block).await {
-                println!("submit_block error: {:?}", err);
+                println!(
+                    "submit_block error: {:?}. This could be a connection issue.",
+                    err
+                );
             }
         } else {
-            eprintln!("Found nonce but no block!");
+            eprintln!("BUG: Found nonce but no block! Contact the developers.");
         }
     }
     block_state.current_work.nonce_idx += 1;
@@ -181,7 +193,7 @@ async fn mine_some_nonces(server: ServerRef) -> ocl::Result<()> {
     let elapsed = match SystemTime::now().duration_since(*timestamp) {
         Ok(elapsed) => elapsed,
         Err(err) => {
-            eprintln!("Elapsed time error: {}", err);
+            eprintln!("BUG: Elapsed time error: {}. Contact the developers.", err);
             return Ok(());
         }
     };
@@ -212,7 +224,20 @@ async fn submit_block(server: &Server, block: &Block) -> Result<(), Box<dyn std:
     let response: SubmitBlockResponse = serde_json::from_str(&response.text().await?)?;
     match response.result {
         None => println!("BLOCK ACCEPTED!"),
-        Some(reason) => println!("REJECTED BLOCK: {}", reason),
+        Some(reason) => {
+            println!("REJECTED BLOCK: {}", reason);
+            if reason == "inconclusive" {
+                println!(
+                    "This is an orphan race; might be fixed by lowering rpc_poll_interval or \
+                          updating to the newest lotus-gpu-miner."
+                );
+            } else {
+                println!(
+                    "Something is misconfigured; make sure you run the latest \
+                          lotusd/Lotus-QT and lotus-gpu-miner."
+                );
+            }
+        }
     }
     Ok(())
 }

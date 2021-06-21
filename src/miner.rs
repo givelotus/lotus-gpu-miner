@@ -119,7 +119,10 @@ impl Miner {
         {
             Some(base) => base,
             None => {
-                eprintln!("BUG: Nonce base overflow, skipping");
+                eprintln!(
+                    "Error: Nonce base overflow, skipping. This could be fixed by lowering \
+                           rpc_poll_interval."
+                );
                 return Ok(None);
             }
         };
@@ -160,7 +163,10 @@ impl Miner {
                         hex::encode(&candidate_hash)
                     );
                     if hash.last() != Some(&0) {
-                        eprintln!("BUG: found nonce's hash has no leading zero byte");
+                        eprintln!(
+                            "BUG: found nonce's hash has no leading zero byte. Contact the \
+                                   developers."
+                        );
                     }
                     for (&h, &t) in hash.iter().zip(work.target.iter()).rev() {
                         if h > t {
