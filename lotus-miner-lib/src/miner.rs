@@ -182,4 +182,8 @@ impl Miner {
         }
         Ok(None)
     }
+
+    pub fn set_intensity(&mut self, intensity: i32) {
+        self.settings.kernel_size = 1 << intensity;
+    }
 }
