@@ -1,8 +1,10 @@
+use std::io::Write;
+
 use clap::{crate_authors, crate_description, crate_version, load_yaml, App};
 use config::{Config, ConfigError, File};
 use serde::Deserialize;
 
-const DEFAULT_URL: &str = "http://127.0.0.1:7632";
+const DEFAULT_URL: &str = "http://127.0.0.1:10604";
 const DEFAULT_USER: &str = "lotus";
 const DEFAULT_PASSWORD: &str = "lotus";
 const DEFAULT_RPC_POLL_INTERVAL: i64 = 3;
@@ -20,6 +22,15 @@ pub struct Settings {
     pub kernel_size: i64,
     pub gpu_index: i64,
 }
+
+const DEFAULT_CONFIG_FILE_CONTENT: &str = r#"mine_to_address = ""
+rpc_url = "http://127.0.0.1:10604"
+rpc_poll_interval = 3
+rpc_user = "lotus"
+rpc_password = "lotus"
+gpu_index = 0
+kernel_size = 23
+"#;
 
 impl Settings {
     pub fn new() -> Result<Self, ConfigError> {
@@ -44,10 +55,45 @@ impl Settings {
         s.set_default("gpu_index", DEFAULT_GPU_INDEX)?;
 
         // Load config from file
-        let mut default_config = home_dir;
-        default_config.push(format!("{}/config", FOLDER_DIR));
+        let default_config = home_dir;
+        let default_config_folder = default_config.join(FOLDER_DIR);
+        let default_config_toml = default_config_folder.join("config.toml");
+        let default_config = default_config_folder.join("config");
         let default_config_str = default_config.to_str().unwrap();
-        let config_path = matches.value_of("config").unwrap_or(default_config_str);
+        let config_path = match matches.value_of("config") {
+            Some(config_path) => config_path,
+            None => {
+                if !default_config_toml.exists() {
+                    if let Err(err) = std::fs::create_dir_all(&default_config_folder) {
+                        eprintln!(
+                            "Error: Couldn't create default config folder {}: {}",
+                            default_config_folder.to_string_lossy(),
+                            err
+                        );
+                    }
+                    match std::fs::File::create(&default_config_toml) {
+                        Ok(mut file) => {
+                            if let Err(err) = file.write_all(DEFAULT_CONFIG_FILE_CONTENT.as_bytes())
+                            {
+                                eprintln!(
+                                    "Error: Couldn't write default config toml file {}: {}",
+                                    default_config_toml.to_string_lossy(),
+                                    err
+                                );
+                            }
+                        }
+                        Err(err) => {
+                            eprintln!(
+                                "Error: Couldn't create default config toml file {}: {}",
+                                default_config_toml.to_string_lossy(),
+                                err
+                            );
+                        }
+                    };
+                }
+                default_config_str
+            }
+        };
         s.merge(File::with_name(config_path).required(false))?;
 
         // Set bind address from cmd line
@@ -76,6 +122,17 @@ impl Settings {
         // Set the bitcoin network
         if let Some(mine_to_address) = matches.value_of("mine_to_address") {
             s.set("mine_to_address", mine_to_address)?;
+        }
+        if s.get_str("mine_to_address")
+            .map(|mine_to_address| mine_to_address.is_empty())
+            .unwrap_or(true)
+        {
+            return Err(ConfigError::Message(format!(
+                "Must set mine_to_address config option. You can find it in {}.toml",
+                std::fs::canonicalize(&config_path)
+                    .map(|path| path.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| config_path.to_string())
+            )));
         }
 
         // Set the bitcoin network
