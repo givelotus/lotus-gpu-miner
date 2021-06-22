@@ -20,3 +20,4 @@ config = "0.11.0"
 clap = { version = "2.33.3", features = ["yaml"] }
 dirs = "3.0.1"
 rand = "0.8.3"
+chrono = "0.4.19"

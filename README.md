@@ -12,10 +12,10 @@ The configuration file looks like the following:
 
 ```
 mine_to_address = "bchtest:qqegajxrzx9juvg9fuu4cqvndz3u2yz6eg6jfudlvh"
-rpc_url = "http://127.0.0.1:7632"
+rpc_url = "http://127.0.0.1:10605"
 rpc_poll_interval = 3
 rpc_user = "lotus"
-rpc_password = "yourpassword"
+rpc_password = "lotus"
 gpu_index = 0
 kernel_size = 23
 ```
