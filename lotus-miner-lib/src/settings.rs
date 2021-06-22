@@ -13,7 +13,7 @@ const DEFAULT_KERNEL_SIZE: i64 = 21;
 const DEFAULT_GPU_INDEX: i64 = 0;
 
 #[derive(Debug, Deserialize)]
-pub struct Settings {
+pub struct ConfigSettings {
     pub rpc_url: String,
     pub rpc_user: String,
     pub rpc_password: String,
@@ -32,8 +32,8 @@ gpu_index = 0
 kernel_size = 23
 "#;
 
-impl Settings {
-    pub fn new() -> Result<Self, ConfigError> {
+impl ConfigSettings {
+    pub fn load(expect_mine_to_address: bool) -> Result<Self, ConfigError> {
         let mut s = Config::new();
 
         // Set defaults
@@ -123,9 +123,10 @@ impl Settings {
         if let Some(mine_to_address) = matches.value_of("mine_to_address") {
             s.set("mine_to_address", mine_to_address)?;
         }
-        if s.get_str("mine_to_address")
-            .map(|mine_to_address| mine_to_address.is_empty())
-            .unwrap_or(true)
+        if expect_mine_to_address
+            && s.get_str("mine_to_address")
+                .map(|mine_to_address| mine_to_address.is_empty())
+                .unwrap_or(true)
         {
             return Err(ConfigError::Message(format!(
                 "Must set mine_to_address config option. You can find it in {}.toml",

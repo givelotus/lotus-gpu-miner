@@ -672,8 +672,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "lotus-miner"
-version = "0.2.0"
+name = "lotus-miner-cli"
+version = "0.3.0"
+dependencies = [
+ "lotus-miner-lib",
+ "tokio",
+]
+
+[[package]]
+name = "lotus-miner-lib"
+version = "0.3.0"
 dependencies = [
  "bitcoincash-addr",
  "clap",

@@ -1,4 +1,13 @@
+mod block;
+mod miner;
+mod settings;
+mod sha256;
+
+pub use settings::ConfigSettings;
+pub use miner::Miner;
+
 use std::{
+    convert::TryInto,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
@@ -7,31 +16,29 @@ use std::{
 };
 
 use block::{create_block, Block, GetRawUnsolvedBlockResponse};
-use miner::{Miner, MiningSettings, Work};
+use miner::{MiningSettings, Work};
 use rand::{Rng, SeedableRng};
 use reqwest::RequestBuilder;
 use serde::Deserialize;
 use tokio::sync::Mutex;
 
-use settings::Settings;
-
-mod block;
-mod miner;
-mod settings;
-mod sha256;
-
-struct Server {
+pub struct Server {
     client: reqwest::Client,
-    bitcoind_url: String,
-    bitcoind_user: String,
-    bitcoind_password: String,
-    miner_addr: String,
     miner: std::sync::Mutex<Miner>,
+    node_settings: Mutex<NodeSettings>,
     block_state: Mutex<BlockState>,
     rng: Mutex<rand::rngs::StdRng>,
     metrics_timestamp: Mutex<SystemTime>,
     metrics_nonces: AtomicU64,
     metrics_nonces_per_call: u64,
+}
+
+pub struct NodeSettings {
+    pub bitcoind_url: String,
+    pub bitcoind_user: String,
+    pub bitcoind_password: String,
+    pub rpc_poll_interval: u64,
+    pub miner_addr: String,
 }
 
 struct BlockState {
@@ -43,70 +50,78 @@ struct BlockState {
 
 type ServerRef = Arc<Server>;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let configuration: Settings = Settings::new().expect("couldn't load config");
-    let mining_settings = MiningSettings {
-        local_work_size: 256,
-        inner_iter_size: 16,
-        kernel_size: 1 << configuration.kernel_size,
-        kernel_name: "lotus_og".to_string(),
-        sleep: 0,
-        gpu_indices: vec![configuration.gpu_index as usize],
-    };
-    let miner = Miner::setup(mining_settings.clone()).unwrap();
-    let server = Arc::new(Server {
-        metrics_nonces_per_call: miner.num_nonces_per_search(),
-        miner: std::sync::Mutex::new(miner),
-        client: reqwest::Client::new(),
-        bitcoind_url: configuration.rpc_url.clone(),
-        bitcoind_user: configuration.rpc_user.clone(),
-        bitcoind_password: configuration.rpc_password.clone(),
-        miner_addr: configuration.mine_to_address.clone(),
-        block_state: Mutex::new(BlockState {
-            current_work: Work::default(),
-            current_block: None,
-            next_block: None,
-            extra_nonce: 0,
-        }),
-        rng: Mutex::new(rand::rngs::StdRng::from_entropy()),
-        metrics_timestamp: Mutex::new(SystemTime::now()),
-        metrics_nonces: AtomicU64::new(0),
-    });
-    let t1 = tokio::spawn({
-        let server = Arc::clone(&server);
-        async move {
-            loop {
-                if let Err(err) = update_next_block(&server).await {
-                    eprintln!("update_next_block error: {:?}", err);
-                }
-                tokio::time::sleep(Duration::from_secs(configuration.rpc_poll_interval as u64))
-                    .await;
-            }
+impl Server {
+    pub fn from_config(config: ConfigSettings) -> Self {
+        let mining_settings = MiningSettings {
+            local_work_size: 256,
+            inner_iter_size: 16,
+            kernel_size: 1 << config.kernel_size,
+            kernel_name: "lotus_og".to_string(),
+            sleep: 0,
+            gpu_indices: vec![config.gpu_index as usize],
+        };
+        let miner = Miner::setup(mining_settings.clone()).unwrap();
+        Server {
+            metrics_nonces_per_call: miner.num_nonces_per_search(),
+            miner: std::sync::Mutex::new(miner),
+            client: reqwest::Client::new(),
+            node_settings: Mutex::new(NodeSettings {
+                bitcoind_url: config.rpc_url.clone(),
+                bitcoind_user: config.rpc_user.clone(),
+                bitcoind_password: config.rpc_password.clone(),
+                rpc_poll_interval: config.rpc_poll_interval.try_into().unwrap(),
+                miner_addr: config.mine_to_address.clone(),
+            }),
+            block_state: Mutex::new(BlockState {
+                current_work: Work::default(),
+                current_block: None,
+                next_block: None,
+                extra_nonce: 0,
+            }),
+            rng: Mutex::new(rand::rngs::StdRng::from_entropy()),
+            metrics_timestamp: Mutex::new(SystemTime::now()),
+            metrics_nonces: AtomicU64::new(0),
         }
-    });
-    let t2 = tokio::spawn({
-        let server = Arc::clone(&server);
-        async move {
-            loop {
-                if let Err(err) = mine_some_nonces(Arc::clone(&server)).await {
-                    eprintln!("mine_some_nonces error: {:?}", err);
-                }
-                tokio::time::sleep(Duration::from_micros(3)).await;
-            }
-        }
-    });
-    t1.await?;
-    t2.await?;
+    }
 
-    Ok(())
+    pub async fn run(self: ServerRef) -> Result<(), Box<dyn std::error::Error>> {
+        let t1 = tokio::spawn({
+            let server = Arc::clone(&self);
+            async move {
+                loop {
+                    if let Err(err) = update_next_block(&server).await {
+                        eprintln!("update_next_block error: {:?}", err);
+                    }
+                    tokio::time::sleep(Duration::from_secs(
+                        server.node_settings.lock().await.rpc_poll_interval,
+                    ))
+                    .await;
+                }
+            }
+        });
+        let t2 = tokio::spawn({
+            let server = Arc::clone(&self);
+            async move {
+                loop {
+                    if let Err(err) = mine_some_nonces(Arc::clone(&server)).await {
+                        eprintln!("mine_some_nonces error: {:?}", err);
+                    }
+                    tokio::time::sleep(Duration::from_micros(3)).await;
+                }
+            }
+        });
+        t1.await?;
+        t2.await?;
+        Ok(())
+    }
 }
 
-fn init_request(server: &Server) -> RequestBuilder {
-    server
-        .client
-        .post(&server.bitcoind_url)
-        .basic_auth(&server.bitcoind_user, Some(&server.bitcoind_password))
+async fn init_request(server: &Server) -> RequestBuilder {
+    let node_settings = server.node_settings.lock().await;
+    server.client.post(&node_settings.bitcoind_url).basic_auth(
+        &node_settings.bitcoind_user,
+        Some(&node_settings.bitcoind_password),
+    )
 }
 
 fn display_hash(hash: &[u8]) -> String {
@@ -117,9 +132,10 @@ fn display_hash(hash: &[u8]) -> String {
 
 async fn update_next_block(server: &Server) -> Result<(), Box<dyn std::error::Error>> {
     let response = init_request(&server)
+        .await
         .body(format!(
             r#"{{"method":"getrawunsolvedblock","params":["{}"]}}"#,
-            server.miner_addr
+            server.node_settings.lock().await.miner_addr
         ))
         .send()
         .await?;
@@ -220,6 +236,7 @@ async fn submit_block(server: &Server, block: &Block) -> Result<(), Box<dyn std:
     let mut serialized_block = block.header.to_vec();
     serialized_block.extend_from_slice(&block.body);
     let response = init_request(server)
+        .await
         .body(format!(
             r#"{{"method":"submitblock","params":[{:?}]}}"#,
             hex::encode(&serialized_block)
