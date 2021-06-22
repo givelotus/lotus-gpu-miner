@@ -4,13 +4,13 @@ use clap::{crate_authors, crate_description, crate_version, load_yaml, App};
 use config::{Config, ConfigError, File};
 use serde::Deserialize;
 
-const DEFAULT_URL: &str = "http://127.0.0.1:10604";
-const DEFAULT_USER: &str = "lotus";
-const DEFAULT_PASSWORD: &str = "lotus";
-const DEFAULT_RPC_POLL_INTERVAL: i64 = 3;
-const FOLDER_DIR: &str = ".lotus-miner";
-const DEFAULT_KERNEL_SIZE: i64 = 21;
-const DEFAULT_GPU_INDEX: i64 = 0;
+pub const DEFAULT_URL: &str = "http://127.0.0.1:10604";
+pub const DEFAULT_USER: &str = "lotus";
+pub const DEFAULT_PASSWORD: &str = "lotus";
+pub const DEFAULT_RPC_POLL_INTERVAL: i64 = 3;
+pub const FOLDER_DIR: &str = ".lotus-miner";
+pub const DEFAULT_KERNEL_SIZE: i64 = 21;
+pub const DEFAULT_GPU_INDEX: i64 = 0;
 
 #[derive(Debug, Deserialize)]
 pub struct ConfigSettings {

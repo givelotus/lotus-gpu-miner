@@ -5,7 +5,7 @@ use ocl::{
 use sha2::Digest;
 use std::convert::TryInto;
 
-use crate::sha256::lotus_hash;
+use crate::{sha256::lotus_hash, Log};
 
 #[derive(Debug, Clone)]
 pub struct MiningSettings {
@@ -102,6 +102,23 @@ impl Miner {
         })
     }
 
+    pub fn list_device_names() -> Vec<String> {
+        let platforms = Platform::list();
+        let mut device_names = Vec::new();
+        for platform in platforms.iter() {
+            let platform_name = platform.name().unwrap_or("<invalid platform>".to_string());
+            let devices = Device::list_all(platform).unwrap_or(vec![]);
+            for device in devices.iter() {
+                device_names.push(format!(
+                    "{} - {}",
+                    platform_name,
+                    device.name().unwrap_or("<invalid device>".to_string())
+                ));
+            }
+        }
+        device_names
+    }
+
     pub fn has_nonces_left(&self, work: &Work) -> bool {
         work.nonce_idx
             .checked_mul(self.settings.kernel_size)
@@ -112,16 +129,16 @@ impl Miner {
         self.settings.kernel_size as u64 * self.settings.inner_iter_size as u64
     }
 
-    pub fn find_nonce(&mut self, work: &Work) -> ocl::Result<Option<u64>> {
+    pub fn find_nonce(&mut self, work: &Work, log: &Log) -> ocl::Result<Option<u64>> {
         let base = match work
             .nonce_idx
             .checked_mul(self.num_nonces_per_search().try_into().unwrap())
         {
             Some(base) => base,
             None => {
-                eprintln!(
+                log.error(
                     "Error: Nonce base overflow, skipping. This could be fixed by lowering \
-                           rpc_poll_interval."
+                           rpc_poll_interval.",
                 );
                 return Ok(None);
             }
@@ -143,7 +160,7 @@ impl Miner {
         let cmd = self
             .search_kernel
             .cmd()
-            .local_work_size(self.settings.local_work_size);
+            .global_work_size(self.settings.kernel_size);
         unsafe {
             cmd.enq()?;
         }
@@ -158,15 +175,15 @@ impl Miner {
                     let hash = lotus_hash(&header);
                     let mut candidate_hash = hash;
                     candidate_hash.reverse();
-                    println!(
+                    log.info(format!(
                         "Candidate: nonce={}, hash={}",
                         result_nonce,
                         hex::encode(&candidate_hash)
-                    );
+                    ));
                     if hash.last() != Some(&0) {
-                        eprintln!(
+                        log.bug(
                             "BUG: found nonce's hash has no leading zero byte. Contact the \
-                                   developers."
+                                   developers.",
                         );
                     }
                     for (&h, &t) in hash.iter().zip(work.target.iter()).rev() {
@@ -185,5 +202,15 @@ impl Miner {
 
     pub fn set_intensity(&mut self, intensity: i32) {
         self.settings.kernel_size = 1 << intensity;
+    }
+
+    pub fn update_gpu_index(&mut self, gpu_index: i64) -> ocl::Result<()> {
+        if self.settings.gpu_indices[0] == gpu_index as usize {
+            return Ok(());
+        }
+        let mut settings = self.settings.clone();
+        settings.gpu_indices = vec![gpu_index.try_into().unwrap()];
+        *self = Miner::setup(settings)?;
+        Ok(())
     }
 }

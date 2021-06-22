@@ -10,8 +10,8 @@ pub struct Block {
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct GetRawUnsolvedBlockResponse {
-    pub result: RawUnsolvedBlockAndTarget,
-    error: Option<String>,
+    pub result: Option<RawUnsolvedBlockAndTarget>,
+    pub error: Option<String>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
