@@ -3,6 +3,7 @@ mod miner;
 pub mod settings;
 mod sha256;
 
+use eyre::Result;
 pub use miner::Miner;
 pub use settings::ConfigSettings;
 
@@ -225,7 +226,7 @@ async fn update_next_block(server: &Server) -> Result<(), Box<dyn std::error::Er
     Ok(())
 }
 
-async fn mine_some_nonces(server: ServerRef) -> ocl::Result<()> {
+async fn mine_some_nonces(server: ServerRef) -> Result<()> {
     let log = server.log();
     let mut block_state = server.block_state.lock().await;
     if let Some(next_block) = block_state.next_block.take() {

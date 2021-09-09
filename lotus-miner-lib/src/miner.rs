@@ -4,8 +4,16 @@ use ocl::{
 };
 use sha2::Digest;
 use std::convert::TryInto;
+use eyre::Result;
+use thiserror::Error;
 
 use crate::{sha256::lotus_hash, Log};
+
+#[derive(Debug, Error)]
+pub enum MinerError {
+    #[error("Ocl error: {0:?}")]
+    Ocl(ocl::Error)
+}
 
 #[derive(Debug, Clone)]
 pub struct MiningSettings {
@@ -30,6 +38,14 @@ pub struct Work {
     target: [u8; 32],
     pub nonce_idx: u32,
 }
+
+impl From<ocl::Error> for MinerError {
+    fn from(err: ocl::Error) -> Self {
+        MinerError::Ocl(err)
+    }
+}
+
+use self::MinerError::*;
 
 impl Work {
     pub fn from_header(header: [u8; 160], target: [u8; 32]) -> Work {
@@ -60,7 +76,7 @@ impl Default for Work {
 }
 
 impl Miner {
-    pub fn setup(settings: MiningSettings) -> ocl::Result<Self> {
+    pub fn setup(settings: MiningSettings) -> Result<Self> {
         let mut prog_builder = ProgramBuilder::new();
         prog_builder
             .src_file(format!("kernels/{}.cl", settings.kernel_name))
@@ -74,9 +90,9 @@ impl Miner {
                 platform_idx,
                 platform.name().unwrap_or("<invalid platform>".to_string())
             );
-            let devices = Device::list_all(platform)?;
+            let devices = Device::list_all(platform).map_err(Ocl)?;
             for (device_idx, device) in devices.iter().enumerate() {
-                println!("- device {}: {}", device_idx, device.name()?);
+                println!("- device {}: {}", device_idx, device.name().map_err(Ocl)?);
             }
         }
         let mut platform_device = None;
@@ -110,7 +126,7 @@ impl Miner {
             .arg_named("offset", 0u32)
             .arg_named("partial_header", None::<&Buffer<u32>>)
             .arg_named("output", None::<&Buffer<u32>>)
-            .build()?;
+            .build().map_err(Ocl)?;
         Ok(Miner {
             search_kernel,
             buffer,
@@ -146,7 +162,7 @@ impl Miner {
         self.settings.kernel_size as u64 * self.settings.inner_iter_size as u64
     }
 
-    pub fn find_nonce(&mut self, work: &Work, log: &Log) -> ocl::Result<Option<u64>> {
+    pub fn find_nonce(&mut self, work: &Work, log: &Log) -> Result<Option<u64>> {
         let base = match work
             .nonce_idx
             .checked_mul(self.num_nonces_per_search().try_into().unwrap())
@@ -167,21 +183,21 @@ impl Miner {
         for (chunk, int) in partial_header.chunks(4).zip(partial_header_ints.iter_mut()) {
             *int = u32::from_be_bytes(chunk.try_into().unwrap());
         }
-        self.header_buffer.write(&partial_header_ints[..]).enq()?;
+        self.header_buffer.write(&partial_header_ints[..]).enq().map_err(Ocl)?;
         self.search_kernel
-            .set_arg("partial_header", &self.header_buffer)?;
-        self.search_kernel.set_arg("output", &self.buffer)?;
-        self.search_kernel.set_arg("offset", base)?;
+            .set_arg("partial_header", &self.header_buffer).map_err(Ocl)?;
+        self.search_kernel.set_arg("output", &self.buffer).map_err(Ocl)?;
+        self.search_kernel.set_arg("offset", base).map_err(Ocl)?;
         let mut vec = vec![0; self.buffer.len()];
-        self.buffer.write(&vec).enq()?;
+        self.buffer.write(&vec).enq().map_err(Ocl)?;
         let cmd = self
             .search_kernel
             .cmd()
             .global_work_size(self.settings.kernel_size);
         unsafe {
-            cmd.enq()?;
+            cmd.enq().map_err(Ocl)?;
         }
-        self.buffer.read(&mut vec).enq()?;
+        self.buffer.read(&mut vec).enq().map_err(Ocl)?;
         if vec[0x80] != 0 {
             let mut header = work.header;
             'nonce: for &nonce in &vec[..0x7f] {
@@ -221,7 +237,7 @@ impl Miner {
         self.settings.kernel_size = 1 << intensity;
     }
 
-    pub fn update_gpu_index(&mut self, gpu_index: i64) -> ocl::Result<()> {
+    pub fn update_gpu_index(&mut self, gpu_index: i64) -> Result<()> {
         if self.settings.gpu_indices[0] == gpu_index as usize {
             return Ok(());
         }
