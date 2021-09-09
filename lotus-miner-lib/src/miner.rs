@@ -1,6 +1,6 @@
 use ocl::{
     builders::{DeviceSpecifier, ProgramBuilder},
-    Buffer, Device, Kernel, Platform, ProQue,
+    Buffer, Context, Device, Kernel, Platform, Queue,
 };
 use sha2::Digest;
 use std::convert::TryInto;
@@ -61,8 +61,8 @@ impl Default for Work {
 
 impl Miner {
     pub fn setup(settings: MiningSettings) -> ocl::Result<Self> {
-        let mut builder = ProgramBuilder::new();
-        builder
+        let mut prog_builder = ProgramBuilder::new();
+        prog_builder
             .src_file(format!("kernels/{}.cl", settings.kernel_name))
             .cmplr_def("WORKSIZE", settings.local_work_size)
             .cmplr_def("ITERATIONS", settings.inner_iter_size);
@@ -79,21 +79,38 @@ impl Miner {
                 println!("- device {}: {}", device_idx, device.name()?);
             }
         }
-        let pro_que = ProQue::builder()
-            .device(DeviceSpecifier::WrappingIndices(
-                settings.gpu_indices.clone(),
-            ))
-            .prog_bldr(builder)
-            .dims(settings.kernel_size)
-            .build()?;
-        let search_kernel = pro_que
-            .kernel_builder("search")
+        let mut platform_device = None;
+        let mut gpu_index = 0;
+        for cur_platform in platforms {
+            if let Ok(devices) = Device::list_all(cur_platform.clone()) {
+                for cur_device in devices {
+                    if gpu_index == settings.gpu_indices[0] {
+                        platform_device = Some((cur_platform, cur_device));
+                    }
+                    gpu_index += 1;
+                }
+            }
+        }
+        let (platform, device) = platform_device.expect("No such GPU");
+        let ctx = Context::builder()
+            .platform(platform.clone())
+            .devices(DeviceSpecifier::Single(device.clone()))
+            .build().map_err(Ocl)?;
+        let queue = Queue::new(&ctx, device, None).map_err(Ocl)?;
+        prog_builder.devices(DeviceSpecifier::Single(device.clone()));
+        let program = prog_builder.build(&ctx).map_err(Ocl)?;
+        let mut kernel_builder = Kernel::builder();
+        kernel_builder
+            .program(&program)
+            .name("search")
+            .queue(queue.clone());
+        let buffer = Buffer::builder().len(0xff).queue(queue.clone()).build().map_err(Ocl)?;
+        let header_buffer = Buffer::builder().len(0xff).queue(queue).build().map_err(Ocl)?;
+        let search_kernel = kernel_builder
             .arg_named("offset", 0u32)
             .arg_named("partial_header", None::<&Buffer<u32>>)
             .arg_named("output", None::<&Buffer<u32>>)
             .build()?;
-        let buffer = pro_que.buffer_builder::<u32>().len(0xff).build()?;
-        let header_buffer = pro_que.buffer_builder::<u32>().len(0xff).build()?;
         Ok(Miner {
             search_kernel,
             buffer,

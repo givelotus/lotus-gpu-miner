@@ -141,7 +141,7 @@ impl ConfigSettings {
             s.set("kernel_size", kernel_size.parse::<i64>().unwrap())?;
         }
 
-        // Set the bitcoin network
+        // Set the GPU index
         if let Some(gpu_index) = matches.value_of("gpu_index") {
             s.set("gpu_index", gpu_index.parse::<i64>().unwrap())?;
         }
