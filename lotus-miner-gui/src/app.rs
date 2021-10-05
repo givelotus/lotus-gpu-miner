@@ -90,17 +90,24 @@ impl epi::App for MinerApp {
         "Lotus GPU Miner"
     }
 
-    fn load(&mut self, storage: &dyn epi::Storage) {
-        if let Some(user_settings) = epi::get_value(storage, epi::APP_KEY) {
-            self.user_settings = user_settings;
-        }
-    }
-
     fn save(&mut self, storage: &mut dyn epi::Storage) {
         epi::set_value(storage, epi::APP_KEY, &self.user_settings);
     }
 
-    fn setup(&mut self, _ctx: &egui::CtxRef) {
+    fn setup(
+        &mut self,
+        _ctx: &egui::CtxRef, 
+        _frame: &mut epi::Frame<'_>,
+        storage: Option<&dyn epi::Storage>,
+    ) {
+        match storage {
+            Some(storage) => {
+                if let Some(user_settings) = epi::get_value(storage, epi::APP_KEY) {
+                    self.user_settings = user_settings;
+                }
+            }
+            None => println!("No storage"),
+        }
         std::thread::spawn({
             let server = Arc::clone(&self.server);
             move || {
@@ -116,7 +123,7 @@ impl epi::App for MinerApp {
         self.logs
             .append(&mut self.server.log().get_logs_and_clear());
 
-        egui::SidePanel::left("side_panel", 300.0).show(ctx, |ui| {
+        egui::SidePanel::left("side_panel").default_width(300.0).show(ctx, |ui| {
             ui.heading("Settings (\"Apply & Mine\" to update)");
 
             egui::Grid::new("panel_grid")
@@ -178,7 +185,7 @@ impl epi::App for MinerApp {
                     ui.label("");
                     let btn_apply = Button::new("Apply & Mine")
                         .text_color(Color32::BLACK)
-                        .fill(Some(Color32::LIGHT_GRAY));
+                        .fill(Color32::LIGHT_GRAY);
                     if ui.add(btn_apply).clicked() {
                         self._apply_settings();
                     }
