@@ -4,8 +4,6 @@ version = "0.3.0"
 authors = ["Tobias Ruck <ruck.tobias@gmail.com>"]
 edition = "2018"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
 ocl = "0.19.3"
 hex-literal = "0.3.1"
@@ -21,3 +19,5 @@ clap = { version = "2.33.3", features = ["yaml"] }
 dirs = "3.0.1"
 rand = "0.8.3"
 chrono = "0.4.19"
+eyre = "0.6.5"
+thiserror = "1.0"
